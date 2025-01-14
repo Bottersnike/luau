@@ -9173,9 +9173,10 @@ function foo(x = math.max(CONST1, CONST2)) return x end
 )"),
         R"(
 JUMPXEQKNIL R0 L0 NOT
-GETIMPORT R0 2 [math.max]
 GETUPVAL R1 0
 GETUPVAL R2 1
+FASTCALL2 18 R1 R2 L0
+GETIMPORT R0 2 [math.max]
 CALL R0 2 1
 L0: RETURN R0 1
 )"

@@ -226,6 +226,11 @@ void AstExprFunction::visit(AstVisitor* visitor)
             if (arg->annotation)
                 arg->annotation->visit(visitor);
         }
+        for (AstExpr* argDefault : argsDefaults)
+        {
+            if (argDefault)
+                argDefault->visit(visitor);
+        }
 
         if (varargAnnotation)
             varargAnnotation->visit(visitor);

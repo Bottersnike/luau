@@ -4304,4 +4304,27 @@ foo(@1)
     CHECK_EQ(EXPECTED_INSERT, *ac.entryMap[kGeneratedAnonymousFunctionEntryName].insertText);
 }
 
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_in_default_argument")
+{
+    check("local function a(b = ta@1");
+
+    auto ac = autocomplete('1');
+
+    CHECK(!ac.entryMap.empty());
+    CHECK(ac.entryMap.count("table"));
+    CHECK(ac.entryMap.count("math"));
+    CHECK_EQ(ac.context, AutocompleteContext::Expression);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_in_partial_default_argument")
+{
+    check("local function a(b = ta@1");
+
+    auto ac = autocomplete('1');
+
+    CHECK(!ac.entryMap.empty());
+    CHECK(ac.entryMap.count("table"));
+    CHECK_EQ(ac.context, AutocompleteContext::Expression);
+}
+
 TEST_SUITE_END();

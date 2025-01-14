@@ -363,7 +363,17 @@ struct AstJsonEncoder : public AstVisitor
             else
                 comma = true;
 
-            write(a);
+            if constexpr (std::is_pointer_v<T>)
+            {
+                if (a != nullptr)
+                    write(a);
+                else
+                    writeRaw("null");
+            }
+            else
+            {
+                write(a);
+            }
         }
         writeRaw("]");
     }
@@ -431,6 +441,7 @@ struct AstJsonEncoder : public AstVisitor
                 if (node->self)
                     PROP(self);
                 PROP(args);
+                PROP(argsDefaults);
                 if (node->returnAnnotation)
                     PROP(returnAnnotation);
                 PROP(vararg);

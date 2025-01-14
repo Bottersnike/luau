@@ -1299,65 +1299,79 @@ static AutocompleteContext autocompleteExpression(
     {
         if (auto it = module.astTypes.find(node->asExpr()))
             autocompleteProps(module, typeArena, builtinTypes, *it, PropIndexType::Point, ancestry, result);
+        return AutocompleteContext::Expression;
     }
     else if (autocompleteIfElseExpression(node, ancestry, position, result))
         return AutocompleteContext::Keyword;
-    else if (node->is<AstExprFunction>())
-        return AutocompleteContext::Unknown;
-    else
+    else if (AstExprFunction* exprFunction = node->as<AstExprFunction>())
     {
-        // This is inefficient. :(
-        ScopePtr scope = FFlag::LuauAutocompleteRefactorsForIncrementalAutocomplete ? scopeAtPosition : findScopeAtPosition(module, position);
-
-        while (scope)
+        bool typingDefault = false;
+        for (size_t i = 0; i < exprFunction->argsDefaults.size; i++)
         {
-            for (const auto& [name, binding] : scope->bindings)
+            auto arg = exprFunction->args.data[i];
+            auto argDefault = exprFunction->argsDefaults.data[i];
+            if (argDefault && position > arg->location.end && position <= argDefault->location.end)
             {
-                if (!isBindingLegalAtCurrentPosition(name, binding, position))
-                    continue;
-
-                if (isBeingDefined(ancestry, name))
-                    continue;
-
-                std::string n = toString(name);
-                if (!result.count(n))
-                {
-                    TypeCorrectKind typeCorrect = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, binding.typeId);
-
-                    result[n] = {
-                        AutocompleteEntryKind::Binding,
-                        binding.typeId,
-                        binding.deprecated,
-                        false,
-                        typeCorrect,
-                        std::nullopt,
-                        std::nullopt,
-                        binding.documentationSymbol,
-                        {},
-                        getParenRecommendation(binding.typeId, ancestry, typeCorrect)
-                    };
-                }
+                typingDefault = true;
+                break;
             }
+        }
+        if (!typingDefault)
+            return AutocompleteContext::Unknown;
+    }
 
-            scope = scope->parent;
+
+    // This is inefficient. :(
+    ScopePtr scope = FFlag::LuauAutocompleteRefactorsForIncrementalAutocomplete ? scopeAtPosition : findScopeAtPosition(module, position);
+
+    while (scope)
+    {
+        for (const auto& [name, binding] : scope->bindings)
+        {
+            if (!isBindingLegalAtCurrentPosition(name, binding, position))
+                continue;
+
+            if (isBeingDefined(ancestry, name))
+                continue;
+
+            std::string n = toString(name);
+            if (!result.count(n))
+            {
+                TypeCorrectKind typeCorrect = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, binding.typeId);
+
+                result[n] = {
+                    AutocompleteEntryKind::Binding,
+                    binding.typeId,
+                    binding.deprecated,
+                    false,
+                    typeCorrect,
+                    std::nullopt,
+                    std::nullopt,
+                    binding.documentationSymbol,
+                    {},
+                    getParenRecommendation(binding.typeId, ancestry, typeCorrect)
+                };
+            }
         }
 
-        TypeCorrectKind correctForNil = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->nilType);
-        TypeCorrectKind correctForTrue = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->trueType);
-        TypeCorrectKind correctForFalse = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->falseType);
-        TypeCorrectKind correctForFunction =
-            functionIsExpectedAt(module, node, position).value_or(false) ? TypeCorrectKind::Correct : TypeCorrectKind::None;
-
-        result["if"] = {AutocompleteEntryKind::Keyword, std::nullopt, false, false};
-        result["true"] = {AutocompleteEntryKind::Keyword, builtinTypes->booleanType, false, false, correctForTrue};
-        result["false"] = {AutocompleteEntryKind::Keyword, builtinTypes->booleanType, false, false, correctForFalse};
-        result["nil"] = {AutocompleteEntryKind::Keyword, builtinTypes->nilType, false, false, correctForNil};
-        result["not"] = {AutocompleteEntryKind::Keyword};
-        result["function"] = {AutocompleteEntryKind::Keyword, std::nullopt, false, false, correctForFunction};
-
-        if (auto ty = findExpectedTypeAt(module, node, position))
-            autocompleteStringSingleton(*ty, true, node, position, result);
+        scope = scope->parent;
     }
+
+    TypeCorrectKind correctForNil = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->nilType);
+    TypeCorrectKind correctForTrue = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->trueType);
+    TypeCorrectKind correctForFalse = checkTypeCorrectKind(module, typeArena, builtinTypes, node, position, builtinTypes->falseType);
+    TypeCorrectKind correctForFunction =
+        functionIsExpectedAt(module, node, position).value_or(false) ? TypeCorrectKind::Correct : TypeCorrectKind::None;
+
+    result["if"] = {AutocompleteEntryKind::Keyword, std::nullopt, false, false};
+    result["true"] = {AutocompleteEntryKind::Keyword, builtinTypes->booleanType, false, false, correctForTrue};
+    result["false"] = {AutocompleteEntryKind::Keyword, builtinTypes->booleanType, false, false, correctForFalse};
+    result["nil"] = {AutocompleteEntryKind::Keyword, builtinTypes->nilType, false, false, correctForNil};
+    result["not"] = {AutocompleteEntryKind::Keyword};
+    result["function"] = {AutocompleteEntryKind::Keyword, std::nullopt, false, false, correctForFunction};
+
+    if (auto ty = findExpectedTypeAt(module, node, position))
+        autocompleteStringSingleton(*ty, true, node, position, result);
 
     return AutocompleteContext::Expression;
 }
@@ -1722,9 +1736,18 @@ AutocompleteResult autocomplete_(
 
     AstExprConstantNil dummy{Location{}};
     AstNode* parent = ancestry.size() >= 2 ? ancestry.rbegin()[1] : &dummy;
+    AstNode* grandparent = ancestry.size() >= 3 ? ancestry.rbegin()[2] : &dummy;
 
     // If we are inside a body of a function that doesn't have a completed argument list, ignore the body node
     if (auto exprFunction = parent->as<AstExprFunction>(); exprFunction && !exprFunction->argLocation && node == exprFunction->body)
+    {
+        ancestry.pop_back();
+
+        node = ancestry.back();
+        parent = ancestry.size() >= 2 ? ancestry.rbegin()[1] : &dummy;
+    }
+    // If we are inside a default value of a function argument that hasn't been typed fully yet, ignore the body node
+    else if (auto exprFunction = grandparent->as<AstExprFunction>(); exprFunction && !exprFunction->argLocation && node == exprFunction->body)
     {
         ancestry.pop_back();
 
