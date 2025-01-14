@@ -920,6 +920,10 @@ struct Printer
                 writer.symbol(":");
                 visualizeTypeAnnotation(*local->annotation);
             }
+            if (func.argsDefaults.data[i] != nullptr) {
+                writer.symbol("=");
+                visualize(*func.argsDefaults.data[i]);
+            }
         }
 
         if (func.vararg)

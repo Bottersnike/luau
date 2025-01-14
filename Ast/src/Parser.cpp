@@ -979,7 +979,7 @@ AstDeclaredClassProp Parser::parseDeclaredClassMethod()
     Location varargLocation;
     AstTypePack* varargAnnotation = nullptr;
     if (lexer.current().type != ')')
-        std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3 */ true);
+        std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3 */ true, /* allowDefault= */ true);
 
     expectMatchAndConsume(')', matchParen);
 
@@ -1048,7 +1048,7 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
         AstTypePack* varargAnnotation = nullptr;
 
         if (lexer.current().type != ')')
-            std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3= */ true);
+            std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3= */ true, /* allowDefault= */ true);
 
         expectMatchAndConsume(')', matchParen);
 
@@ -1247,7 +1247,11 @@ AstStat* Parser::parseCompoundAssignment(AstExpr* initial, AstExprBinary::Op op)
     return allocator.alloc<AstStatCompoundAssign>(Location(initial->location, value->location), op, initial, value);
 }
 
-std::pair<AstLocal*, AstArray<AstLocal*>> Parser::prepareFunctionArguments(const Location& start, bool hasself, const TempVector<Binding>& args)
+std::tuple<AstLocal*, AstArray<AstLocal*>, AstArray<AstExpr*>> Parser::prepareFunctionArguments(
+    const Location& start,
+    bool hasself,
+    const TempVector<Binding>& args
+)
 {
     AstLocal* self = nullptr;
 
@@ -1255,11 +1259,15 @@ std::pair<AstLocal*, AstArray<AstLocal*>> Parser::prepareFunctionArguments(const
         self = pushLocal(Binding(Name(nameSelf, start), nullptr));
 
     TempVector<AstLocal*> vars(scratchLocal);
+    TempVector<AstExpr*> varsDefaults(scratchExpr);
 
     for (size_t i = 0; i < args.size(); ++i)
+    {
         vars.push_back(pushLocal(args[i]));
+        varsDefaults.push_back(args[i].defaultValue);
+    }
 
-    return {self, copy(vars)};
+    return {self, copy(vars), copy(varsDefaults)};
 }
 
 // funcbody ::= `(' [parlist] `)' [`:' ReturnType] block end
@@ -1299,7 +1307,7 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
     AstTypePack* varargAnnotation = nullptr;
 
     if (lexer.current().type != ')')
-        std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3= */ true);
+        std::tie(vararg, varargLocation, varargAnnotation) = parseBindingList(args, /* allowDot3= */ true, /* allowDefault= */ true);
 
     std::optional<Location> argLocation;
 
@@ -1325,7 +1333,7 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
 
     functionStack.emplace_back(fun);
 
-    auto [self, vars] = prepareFunctionArguments(start, hasself, args);
+    auto [self, vars, varsDefaults] = prepareFunctionArguments(start, hasself, args);
 
     AstStatBlock* body = parseBlock();
 
@@ -1346,6 +1354,7 @@ std::pair<AstExprFunction*, AstLocal*> Parser::parseFunctionBody(
             genericPacks,
             self,
             vars,
+            varsDefaults,
             vararg,
             varargLocation,
             body,
@@ -1378,7 +1387,7 @@ void Parser::parseExprList(TempVector<AstExpr*>& result)
     }
 }
 
-Parser::Binding Parser::parseBinding()
+Parser::Binding Parser::parseBinding(bool allowDefault)
 {
     std::optional<Name> name = parseNameOpt("variable name");
 
@@ -1388,11 +1397,23 @@ Parser::Binding Parser::parseBinding()
 
     AstType* annotation = parseOptionalType();
 
-    return Binding(*name, annotation);
+    AstExpr* defaultValue = nullptr;
+    if (allowDefault && lexer.current().type == '=')
+    {
+        nextLexeme();
+        static Function dummy_fun;
+        functionStack.emplace_back(dummy_fun);
+
+        defaultValue = parseExpr();
+
+        functionStack.pop_back();
+    }
+
+    return Binding(*name, annotation, defaultValue);
 }
 
 // bindinglist ::= (binding | `...') [`,' bindinglist]
-std::tuple<bool, Location, AstTypePack*> Parser::parseBindingList(TempVector<Binding>& result, bool allowDot3)
+std::tuple<bool, Location, AstTypePack*> Parser::parseBindingList(TempVector<Binding>& result, bool allowDot3, bool allowDefault)
 {
     while (true)
     {
@@ -1411,7 +1432,7 @@ std::tuple<bool, Location, AstTypePack*> Parser::parseBindingList(TempVector<Bin
             return {true, varargLocation, tailAnnotation};
         }
 
-        result.push_back(parseBinding());
+        result.push_back(parseBinding(allowDefault));
 
         if (lexer.current().type != ',')
             break;

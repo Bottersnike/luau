@@ -160,7 +160,7 @@ private:
     // var [`+=' | `-=' | `*=' | `/=' | `%=' | `^=' | `..='] exp
     AstStat* parseCompoundAssignment(AstExpr* initial, AstExprBinary::Op op);
 
-    std::pair<AstLocal*, AstArray<AstLocal*>> prepareFunctionArguments(const Location& start, bool hasself, const TempVector<Binding>& args);
+    std::tuple<AstLocal*, AstArray<AstLocal*>, AstArray<AstExpr*>> prepareFunctionArguments(const Location& start, bool hasself, const TempVector<Binding>& args);
 
     // funcbodyhead ::= `(' [namelist [`,' `...'] | `...'] `)' [`:` Type]
     // funcbody ::= funcbodyhead block end
@@ -175,12 +175,12 @@ private:
     // explist ::= {exp `,'} exp
     void parseExprList(TempVector<AstExpr*>& result);
 
-    // binding ::= Name [`:` Type]
-    Binding parseBinding();
+    // binding ::= Name [`:` Type] [`=` Default]
+    Binding parseBinding(bool allowDefault = false);
 
     // bindinglist ::= (binding | `...') {`,' bindinglist}
     // Returns the location of the vararg ..., or std::nullopt if the function is not vararg.
-    std::tuple<bool, Location, AstTypePack*> parseBindingList(TempVector<Binding>& result, bool allowDot3 = false);
+    std::tuple<bool, Location, AstTypePack*> parseBindingList(TempVector<Binding>& result, bool allowDot3 = false, bool allowDefault = false);
 
     AstType* parseOptionalType();
 
@@ -395,10 +395,12 @@ private:
     {
         Name name;
         AstType* annotation;
+        AstExpr* defaultValue;
 
-        explicit Binding(const Name& name, AstType* annotation = nullptr)
+        explicit Binding(const Name& name, AstType* annotation = nullptr, AstExpr* defaultValue = nullptr)
             : name(name)
             , annotation(annotation)
+            , defaultValue(defaultValue)
         {
         }
     };

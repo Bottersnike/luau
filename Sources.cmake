@@ -501,6 +501,7 @@ if(TARGET Luau.UnitTest)
         tests/TypeInfer.builtins.test.cpp
         tests/TypeInfer.cfa.test.cpp
         tests/TypeInfer.classes.test.cpp
+        tests/TypeInfer.defaultarg.test.cpp
         tests/TypeInfer.definitions.test.cpp
         tests/TypeInfer.functions.test.cpp
         tests/TypeInfer.generics.test.cpp

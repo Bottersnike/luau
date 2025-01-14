@@ -225,6 +225,29 @@ struct Compiler
 
         argCount = localStack.size();
 
+        for (size_t i = 0; i < func->argsDefaults.size; ++i)
+        {
+            AstExpr* defaultValue = func->argsDefaults.data[i];
+            if (defaultValue == nullptr)
+                continue;
+
+            // Guaranteed to have been allocated due to pushLocal above
+            Local* l = locals.find(func->args.data[i]);
+
+            size_t jumpLabel = bytecode.emitLabel();
+            // Compare our register to nil
+            bytecode.emitAD(LOP_JUMPXEQKNIL, l->reg, 0);
+            // Invert condition
+            bytecode.emitAux(0 | 0x80000000);
+
+            { // Make a new scope to save on registers
+                RegScope rs_expr(this);
+                compileExpr(defaultValue, l->reg, true);
+            }
+
+            patchJump(defaultValue, jumpLabel, bytecode.emitLabel());
+        }
+
         AstStatBlock* stat = func->body;
 
         for (size_t i = 0; i < stat->body.size; ++i)
@@ -4309,6 +4332,7 @@ void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, c
         /* genericPacks= */ AstArray<AstGenericTypePack>(),
         /* self= */ nullptr,
         AstArray<AstLocal*>(),
+        AstArray<AstExpr*>(),
         /* vararg= */ true,
         /* varargLocation= */ Luau::Location(),
         root,

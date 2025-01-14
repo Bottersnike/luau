@@ -3003,4 +3003,9 @@ TEST_CASE("NativeAttribute")
     CHECK_EQ(nativeStats.functionsCompiled, 2);
 }
 
+TEST_CASE("DefaultArguments")
+{
+    runConformance("defaultarg.lua");
+}
+
 TEST_SUITE_END();
