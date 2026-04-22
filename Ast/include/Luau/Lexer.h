@@ -57,6 +57,11 @@ struct Lexeme
         Attribute,
         AttributeOpen,
 
+        SafeNavigationIndex,
+        SafeNavigationIndexExpr,
+        SafeNavigationCall,
+        SafeNavigationMethodCall,
+
         BrokenString,
         BrokenComment,
         BrokenUnicode,

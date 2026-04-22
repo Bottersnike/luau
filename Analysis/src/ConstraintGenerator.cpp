@@ -2384,6 +2384,24 @@ InferencePack ConstraintGenerator::checkPack(const ScopePtr& scope, AstExprCall*
 
     Checkpoint funcEndCheckpoint = checkpoint(this);
 
+    // For optional calls (`f?()` or `obj?:method()`), strip nil from the function type so
+    // the FunctionCallConstraint and overload resolver see a clean callable type.
+    // For `?.`, the CG check above already produces `propType | nil`; stripping it here
+    // gives back the original BlockedType (or resolved function type) without nil.
+    if (call->optional)
+    {
+        TypeId followed = follow(fnType);
+        if (const UnionType* ut = get<UnionType>(followed))
+        {
+            std::vector<TypeId> nonNil;
+            for (TypeId t : ut)
+                if (!isNil(follow(t)))
+                    nonNil.push_back(t);
+            if (!nonNil.empty())
+                fnType = nonNil.size() == 1 ? nonNil[0] : arena->addType(UnionType{std::move(nonNil)});
+        }
+    }
+
     return checkExprCall(scope, call, fnType, funcBeginCheckpoint, funcEndCheckpoint);
 }
 
@@ -2894,6 +2912,36 @@ Inference ConstraintGenerator::checkIndexName(
 Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprIndexName* indexName)
 {
     const RefinementKey* key = dfg->getRefinementKey(indexName);
+    if (indexName->op == '?')
+    {
+        TypeId subjectType = check(scope, indexName->expr).ty;
+        subjectType = follow(subjectType);
+
+        // Safe navigation short-circuits on a nil receiver instead of asking
+        // HasPropConstraint to resolve a property off nil.
+        if (isNil(subjectType))
+            return Inference{builtinTypes->nilType};
+
+        if (std::optional<TypeId> stripped = stripNilFromUnion(*arena, subjectType))
+            subjectType = follow(*stripped);
+
+        TypeId result = arena->addType(BlockedType{});
+        auto c = addConstraint(
+            scope, indexName->expr->location, HasPropConstraint{result, subjectType, indexName->index.value, ValueContext::RValue, inConditional(typeContext)}
+        );
+        getMutable<BlockedType>(result)->setOwner(c);
+
+        if (key)
+        {
+            if (auto ty = lookup(scope, indexName->indexLocation, key->def, false))
+                return Inference{makeUnion(scope, indexName->location, *ty, builtinTypes->nilType), refinementArena.proposition(key, builtinTypes->truthyType)};
+
+            updateRValueRefinements(scope, key->def, result);
+        }
+
+        Inference inner = key ? Inference{result, refinementArena.proposition(key, builtinTypes->truthyType)} : Inference{result};
+        return Inference{makeUnion(scope, indexName->location, inner.ty, builtinTypes->nilType)};
+    }
     return checkIndexName(scope, key, indexName->expr, indexName->index.value, indexName->indexLocation);
 }
 
@@ -2903,11 +2951,54 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprIndexExpr* in
     {
         module->astTypes[indexExpr->index] = builtinTypes->stringType;
         const RefinementKey* key = dfg->getRefinementKey(indexExpr);
-        return checkIndexName(scope, key, indexExpr->expr, constantString->value.data, indexExpr->location);
+        if (indexExpr->op == '?')
+        {
+            TypeId subjectType = check(scope, indexExpr->expr).ty;
+            subjectType = follow(subjectType);
+
+            if (isNil(subjectType))
+                return Inference{builtinTypes->nilType};
+
+            if (std::optional<TypeId> stripped = stripNilFromUnion(*arena, subjectType))
+                subjectType = follow(*stripped);
+
+            TypeId result = arena->addType(BlockedType{});
+            auto c = addConstraint(
+                scope,
+                indexExpr->expr->location,
+                HasPropConstraint{result, subjectType, constantString->value.data, ValueContext::RValue, inConditional(typeContext)}
+            );
+            getMutable<BlockedType>(result)->setOwner(c);
+
+            if (key)
+            {
+                if (auto ty = lookup(scope, indexExpr->location, key->def, false))
+                    return Inference{makeUnion(scope, indexExpr->location, *ty, builtinTypes->nilType), refinementArena.proposition(key, builtinTypes->truthyType)};
+
+                updateRValueRefinements(scope, key->def, result);
+            }
+
+            Inference inner = key ? Inference{result, refinementArena.proposition(key, builtinTypes->truthyType)} : Inference{result};
+            return Inference{makeUnion(scope, indexExpr->location, inner.ty, builtinTypes->nilType)};
+        }
+
+        Inference inner = checkIndexName(scope, key, indexExpr->expr, constantString->value.data, indexExpr->location);
+        return inner;
     }
 
     TypeId obj = check(scope, indexExpr->expr).ty;
     TypeId indexType = check(scope, indexExpr->index).ty;
+
+    if (indexExpr->op == '?')
+    {
+        obj = follow(obj);
+
+        if (isNil(obj))
+            return Inference{builtinTypes->nilType};
+
+        if (std::optional<TypeId> stripped = stripNilFromUnion(*arena, obj))
+            obj = follow(*stripped);
+    }
 
     TypeId result = arena->addType(BlockedType{});
 
@@ -2915,17 +3006,26 @@ Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprIndexExpr* in
     if (key)
     {
         if (auto ty = lookup(scope, indexExpr->location, key->def))
-            return Inference{*ty, refinementArena.proposition(key, builtinTypes->truthyType)};
+        {
+            TypeId finalTy = indexExpr->op == '?'
+                ? makeUnion(scope, indexExpr->location, *ty, builtinTypes->nilType)
+                : *ty;
+            return Inference{finalTy, refinementArena.proposition(key, builtinTypes->truthyType)};
+        }
         updateRValueRefinements(scope, key->def, result);
     }
 
     auto c = addConstraint(scope, indexExpr->expr->location, HasIndexerConstraint{result, obj, indexType});
     getMutable<BlockedType>(result)->setOwner(c);
 
+    TypeId finalResult = indexExpr->op == '?'
+        ? makeUnion(scope, indexExpr->location, result, builtinTypes->nilType)
+        : result;
+
     if (key)
-        return Inference{result, refinementArena.proposition(key, builtinTypes->truthyType)};
+        return Inference{finalResult, refinementArena.proposition(key, builtinTypes->truthyType)};
     else
-        return Inference{result};
+        return Inference{finalResult};
 }
 
 Inference ConstraintGenerator::check(const ScopePtr& scope, AstExprFunction* func, std::optional<TypeId> expectedType, bool generalize)

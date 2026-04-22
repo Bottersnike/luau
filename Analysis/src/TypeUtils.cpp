@@ -347,7 +347,7 @@ std::vector<TypeId> reduceUnion(const std::vector<TypeId>& types)
     return result;
 }
 
-static std::optional<TypeId> tryStripUnionFromNil(TypeArena& arena, TypeId ty)
+std::optional<TypeId> stripNilFromUnion(TypeArena& arena, TypeId ty)
 {
     if (const UnionType* utv = get<UnionType>(ty))
     {
@@ -377,7 +377,7 @@ TypeId stripNil(NotNull<BuiltinTypes> builtinTypes, TypeArena& arena, TypeId ty)
 
     if (get<UnionType>(ty))
     {
-        std::optional<TypeId> cleaned = tryStripUnionFromNil(arena, ty);
+        std::optional<TypeId> cleaned = stripNilFromUnion(arena, ty);
 
         // If there is no union option without 'nil'
         if (!cleaned)

@@ -452,7 +452,8 @@ public:
         const AstArray<AstExpr*>& args,
         bool self,
         const AstArray<AstTypeOrPack>& explicitTypes,
-        const Location& argLocation
+        const Location& argLocation,
+        bool optional = false
     );
 
     void visit(AstVisitor* visitor) override;
@@ -464,6 +465,7 @@ public:
     AstArray<AstTypeOrPack> typeArguments;
     AstArray<AstExpr*> args;
     bool self;
+    bool optional;
     Location argLocation;
 };
 
@@ -495,12 +497,13 @@ class AstExprIndexExpr : public AstExpr
 public:
     LUAU_RTTI(AstExprIndexExpr)
 
-    AstExprIndexExpr(const Location& location, AstExpr* expr, AstExpr* index);
+    AstExprIndexExpr(const Location& location, AstExpr* expr, AstExpr* index, char op = '[');
 
     void visit(AstVisitor* visitor) override;
 
     AstExpr* expr;
     AstExpr* index;
+    char op = '[';
 };
 
 class AstExprFunction : public AstExpr

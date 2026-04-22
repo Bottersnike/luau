@@ -2223,26 +2223,7 @@ std::optional<TypeId> TypeChecker::getIndexTypeFromTypeImpl(
 
 std::optional<TypeId> TypeChecker::tryStripUnionFromNil(TypeId ty)
 {
-    if (const UnionType* utv = get<UnionType>(ty))
-    {
-        if (!std::any_of(begin(utv), end(utv), isNil))
-            return ty;
-
-        std::vector<TypeId> result;
-
-        for (TypeId option : utv)
-        {
-            if (!isNil(option))
-                result.push_back(option);
-        }
-
-        if (result.empty())
-            return std::nullopt;
-
-        return result.size() == 1 ? result[0] : addType(UnionType{std::move(result)});
-    }
-
-    return std::nullopt;
+    return stripNilFromUnion(currentModule->internalTypes, ty);
 }
 
 TypeId TypeChecker::stripFromNilAndReport(TypeId ty, const Location& location)

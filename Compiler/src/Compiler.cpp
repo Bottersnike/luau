@@ -919,6 +919,96 @@ struct Compiler
 
         setDebugLine(expr); // normally compileExpr sets up line info, but compileExprCall can be called directly
 
+        // Optional call: nil-check function/receiver and skip the call (producing nil) if nil
+        if (expr->optional)
+        {
+            RegScope rs(this);
+            unsigned int regCount = std::max(unsigned(1 + expr->self + expr->args.size), unsigned(targetCount));
+            uint8_t regs = targetTop ? allocReg(expr, regCount - targetCount) - targetCount : allocReg(expr, regCount);
+
+            size_t jumpLabel;
+
+            if (expr->self)
+            {
+                AstExprIndexName* fi = expr->func->as<AstExprIndexName>();
+                LUAU_ASSERT(fi);
+
+                uint8_t selfreg;
+                if (int reg = getExprLocalReg(fi->expr); reg >= 0)
+                    selfreg = uint8_t(reg);
+                else
+                {
+                    selfreg = regs;
+                    compileExprTempTop(fi->expr, selfreg);
+                }
+
+                // nil-check receiver before NAMECALL
+                jumpLabel = bytecode.emitLabel();
+                bytecode.emitAD(LOP_JUMPXEQKNIL, selfreg, 0);
+                bytecode.emitAux(0);
+
+                bool multCall = false;
+                for (size_t i = 0; i < expr->args.size; ++i)
+                {
+                    if (i + 1 == expr->args.size)
+                        multCall = compileExprTempMultRet(expr->args.data[i], uint8_t(regs + 2 + i));
+                    else
+                        compileExprTempTop(expr->args.data[i], uint8_t(regs + 2 + i));
+                }
+
+                setDebugLineEnd(expr->func);
+                setDebugLine(fi->indexLocation);
+
+                BytecodeBuilder::StringRef iname = sref(fi->index);
+                int32_t cid = bytecode.addConstantString(iname);
+                if (cid < 0)
+                    CompileError::raise(fi->location, "Exceeded constant limit; simplify the code to compile");
+
+                bytecode.emitABC(LOP_NAMECALL, regs, selfreg, uint8_t(BytecodeBuilder::getStringHash(iname)));
+                bytecode.emitAux(cid);
+                hintTemporaryExprRegType(fi->expr, selfreg, LBC_TYPE_TABLE, /* instLength */ 2);
+
+                bytecode.emitABC(LOP_CALL, regs, multCall ? 0 : uint8_t(expr->self + expr->args.size + 1), multRet ? 0 : uint8_t(targetCount + 1));
+            }
+            else
+            {
+                compileExprTempTop(expr->func, regs);
+
+                // nil-check the function
+                jumpLabel = bytecode.emitLabel();
+                bytecode.emitAD(LOP_JUMPXEQKNIL, regs, 0);
+                bytecode.emitAux(0);
+
+                bool multCall = false;
+                for (size_t i = 0; i < expr->args.size; ++i)
+                {
+                    if (i + 1 == expr->args.size)
+                        multCall = compileExprTempMultRet(expr->args.data[i], uint8_t(regs + 1 + i));
+                    else
+                        compileExprTempTop(expr->args.data[i], uint8_t(regs + 1 + i));
+                }
+
+                setDebugLineEnd(expr->func);
+                bytecode.emitABC(LOP_CALL, regs, multCall ? 0 : uint8_t(expr->self + expr->args.size + 1), multRet ? 0 : uint8_t(targetCount + 1));
+            }
+
+            if (!targetTop)
+                for (size_t i = 0; i < targetCount; ++i)
+                    bytecode.emitABC(LOP_MOVE, uint8_t(target + i), uint8_t(regs + i), 0);
+
+            // Jump past the nil branch
+            size_t skipLabel = bytecode.emitLabel();
+            bytecode.emitAD(LOP_JUMP, 0, 0);
+
+            // Nil branch: receiver/function was nil
+            patchJump(expr, jumpLabel, bytecode.emitLabel());
+            for (size_t i = 0; i < targetCount; ++i)
+                bytecode.emitABC(LOP_LOADNIL, uint8_t(target + i), 0, 0);
+
+            patchJump(expr, skipLabel, bytecode.emitLabel());
+            return;
+        }
+
         // try inlining the function
         if (options.optimizationLevel >= 2 && !expr->self)
         {
@@ -2369,9 +2459,34 @@ struct Compiler
         if (cid < 0)
             CompileError::raise(expr->location, "Exceeded constant limit; simplify the code to compile");
 
-        bytecode.emitABC(LOP_GETTABLEKS, target, reg, uint8_t(BytecodeBuilder::getStringHash(iname)));
-        bytecode.emitAux(cid);
+        if (expr->op == '?')
+        {
+            // If reg (the table) is nil, jump to Lx to load nil into target instead
+            size_t jumpLabel = bytecode.emitLabel();
+            bytecode.emitAD(LOP_JUMPXEQKNIL, reg, 0);
+            bytecode.emitAux(0); // no inversion: jump if reg IS nil
 
+            // reg is not nil: perform the lookup
+            bytecode.emitABC(LOP_GETTABLEKS, target, reg, uint8_t(BytecodeBuilder::getStringHash(iname)));
+            bytecode.emitAux(cid);
+
+            // Jump past the nil load (to Ly)
+            size_t skipLabel = bytecode.emitLabel();
+            bytecode.emitAD(LOP_JUMP, 0, 0);
+
+            // Lx: reg was nil, store nil in target
+            patchJump(expr, jumpLabel, bytecode.emitLabel());
+            bytecode.emitABC(LOP_LOADNIL, target, 0, 0);
+
+            // Ly:
+            patchJump(expr, skipLabel, bytecode.emitLabel());
+        }
+        else
+        {
+
+            bytecode.emitABC(LOP_GETTABLEKS, target, reg, uint8_t(BytecodeBuilder::getStringHash(iname)));
+            bytecode.emitAux(cid);
+        }
         hintTemporaryExprRegType(expr->expr, reg, LBC_TYPE_TABLE, /* instLength */ 2);
     }
 
@@ -2381,11 +2496,20 @@ struct Compiler
 
         Constant cv = getConstant(expr->index);
 
+        uint8_t rt = compileExprAuto(expr->expr, rs);
+
+        // Safe navigation: if table is nil, skip lookup and load nil into target
+        size_t jumpLabel = 0;
+        if (expr->op == '?')
+        {
+            jumpLabel = bytecode.emitLabel();
+            bytecode.emitAD(LOP_JUMPXEQKNIL, rt, 0);
+            bytecode.emitAux(0); // no inversion: jump if rt IS nil
+        }
+
         if (cv.type == Constant::Type_Number && cv.valueNumber >= 1 && cv.valueNumber <= 256 && double(int(cv.valueNumber)) == cv.valueNumber)
         {
             uint8_t i = uint8_t(int(cv.valueNumber) - 1);
-
-            uint8_t rt = compileExprAuto(expr->expr, rs);
 
             setDebugLine(expr->index);
 
@@ -2400,8 +2524,6 @@ struct Compiler
             if (cid < 0)
                 CompileError::raise(expr->location, "Exceeded constant limit; simplify the code to compile");
 
-            uint8_t rt = compileExprAuto(expr->expr, rs);
-
             setDebugLine(expr->index);
 
             bytecode.emitABC(LOP_GETTABLEKS, target, rt, uint8_t(BytecodeBuilder::getStringHash(iname)));
@@ -2411,13 +2533,23 @@ struct Compiler
         }
         else
         {
-            uint8_t rt = compileExprAuto(expr->expr, rs);
             uint8_t ri = compileExprAuto(expr->index, rs);
 
             bytecode.emitABC(LOP_GETTABLE, target, rt, ri);
 
             hintTemporaryExprRegType(expr->expr, rt, LBC_TYPE_TABLE, /* instLength */ 1);
             hintTemporaryExprRegType(expr->index, ri, LBC_TYPE_NUMBER, /* instLength */ 1);
+        }
+
+        if (expr->op == '?')
+        {
+            size_t skipLabel = bytecode.emitLabel();
+            bytecode.emitAD(LOP_JUMP, 0, 0);
+
+            patchJump(expr, jumpLabel, bytecode.emitLabel());
+            bytecode.emitABC(LOP_LOADNIL, target, 0, 0);
+
+            patchJump(expr, skipLabel, bytecode.emitLabel());
         }
     }
 

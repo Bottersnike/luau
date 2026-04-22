@@ -500,6 +500,7 @@ if(TARGET Luau.UnitTest)
         tests/RegisterCallbacks.h
         tests/RequireTracer.test.cpp
         tests/RuntimeLimits.test.cpp
+        tests/SafeNav.test.cpp
         tests/ScopedFlags.h
         tests/Simplify.test.cpp
         tests/Set.test.cpp

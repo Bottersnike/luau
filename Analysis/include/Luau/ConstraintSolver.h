@@ -481,6 +481,7 @@ public:
         const Location& location
     );
 
+    TypePackId makeReturnTypePackOptional(NotNull<Scope> scope, Location location, TypePackId tp);
     TypePackId anyifyModuleReturnTypePackGenerics(TypePackId tp);
 
     void throwTimeLimitError() const;

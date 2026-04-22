@@ -853,8 +853,13 @@ AstExpr* Parser::parseFunctionName(bool& hasself, AstName& debugname)
 
 static bool isExprLValue(AstExpr* expr)
 {
-    return (expr->is<AstExprLocal>() && (!FFlag::LuauConst2 || !expr->as<AstExprLocal>()->local->isConst)) || expr->is<AstExprGlobal>() ||
-           expr->is<AstExprIndexExpr>() || expr->is<AstExprIndexName>();
+    if (AstExprIndexName* index = expr->as<AstExprIndexName>())
+        return index->op != '?';
+
+    if (AstExprIndexExpr* index = expr->as<AstExprIndexExpr>())
+        return index->op != '?';
+
+    return (expr->is<AstExprLocal>() && (!FFlag::LuauConst2 || !expr->as<AstExprLocal>()->local->isConst)) || expr->is<AstExprGlobal>();
 }
 
 // function funcname funcbody
@@ -1019,8 +1024,7 @@ void Parser::parseAttribute(TempVector<AstAttr*>& attributes)
             report(Location(open.location, lexer.current().location), "Attribute list cannot be empty");
 
             // autocomplete expects at least one unknown attribute.
-            attributes.push_back(
-                allocator.alloc<AstAttr>(Location(open.location, lexer.current().location), AstAttr::Type::Unknown, empty, nameError)
+            attributes.push_back(allocator.alloc<AstAttr>(Location(open.location, lexer.current().location), AstAttr::Type::Unknown, empty, nameError)
             );
         }
 
@@ -1289,7 +1293,7 @@ AstStat* Parser::parseLocal(const Location start, const Position keywordPosition
                     allocator.alloc<CstStatLocal>(extractAnnotationColonPositions(names), varsCommaPositions, copy(valuesCommaPositions));
             }
 
-            // It is a syntax error when a const declaration *definitely* does 
+            // It is a syntax error when a const declaration *definitely* does
             // not have enough values, for example:
             //
             //  const foo
@@ -1635,11 +1639,9 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
 
                     if (chars && !containsNull)
                     {
-                        props.push_back(
-                            AstDeclaredExternTypeProperty{
-                                AstName(chars->data), Location(nameBegin, nameEnd), type, false, Location(begin.location, lexer.previousLocation())
-                            }
-                        );
+                        props.push_back(AstDeclaredExternTypeProperty{
+                            AstName(chars->data), Location(nameBegin, nameEnd), type, false, Location(begin.location, lexer.previousLocation())
+                        });
                     }
                     else
                     {
@@ -1694,11 +1696,9 @@ AstStat* Parser::parseDeclaration(const Location& start, const AstArray<AstAttr*
 
                 expectAndConsume(':', "property type annotation");
                 AstType* propType = parseType();
-                props.push_back(
-                    AstDeclaredExternTypeProperty{
-                        propName->name, propName->location, propType, false, Location(propStart, lexer.previousLocation()), access
-                    }
-                );
+                props.push_back(AstDeclaredExternTypeProperty{
+                    propName->name, propName->location, propType, false, Location(propStart, lexer.previousLocation()), access
+                });
             }
         }
 
@@ -2331,18 +2331,16 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                 {
                     props.push_back(AstTableProp{AstName(chars->data), begin.location, type, access, accessLocation});
                     if (options.storeCstData)
-                        cstItems.push_back(
-                            CstTypeTable::Item{
-                                CstTypeTable::Item::Kind::StringProperty,
-                                begin.location.begin,
-                                indexerClosePosition,
-                                colonPosition,
-                                tableSeparator(),
-                                lexer.current().location.begin,
-                                allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth),
-                                stringPosition
-                            }
-                        );
+                        cstItems.push_back(CstTypeTable::Item{
+                            CstTypeTable::Item::Kind::StringProperty,
+                            begin.location.begin,
+                            indexerClosePosition,
+                            colonPosition,
+                            tableSeparator(),
+                            lexer.current().location.begin,
+                            allocator.alloc<CstExprConstantString>(sourceString, style, blockDepth),
+                            stringPosition
+                        });
                 }
                 else
                     report(begin.location, "String literal contains malformed escape sequence or \\0");
@@ -2363,16 +2361,14 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
                     auto tableIndexerResult = parseTableIndexer(access, accessLocation, begin);
                     indexer = tableIndexerResult.node;
                     if (options.storeCstData)
-                        cstItems.push_back(
-                            CstTypeTable::Item{
-                                CstTypeTable::Item::Kind::Indexer,
-                                tableIndexerResult.indexerOpenPosition,
-                                tableIndexerResult.indexerClosePosition,
-                                tableIndexerResult.colonPosition,
-                                tableSeparator(),
-                                lexer.current().location.begin,
-                            }
-                        );
+                        cstItems.push_back(CstTypeTable::Item{
+                            CstTypeTable::Item::Kind::Indexer,
+                            tableIndexerResult.indexerOpenPosition,
+                            tableIndexerResult.indexerClosePosition,
+                            tableIndexerResult.colonPosition,
+                            tableSeparator(),
+                            lexer.current().location.begin,
+                        });
                 }
             }
         }
@@ -2410,16 +2406,14 @@ AstType* Parser::parseTableType(bool inDeclarationContext)
 
             props.push_back(AstTableProp{name->name, name->location, type, access, accessLocation});
             if (options.storeCstData)
-                cstItems.push_back(
-                    CstTypeTable::Item{
-                        CstTypeTable::Item::Kind::Property,
-                        Position{0, 0},
-                        Position{0, 0},
-                        colonPosition,
-                        tableSeparator(),
-                        lexer.current().location.begin
-                    }
-                );
+                cstItems.push_back(CstTypeTable::Item{
+                    CstTypeTable::Item::Kind::Property,
+                    Position{0, 0},
+                    Position{0, 0},
+                    colonPosition,
+                    tableSeparator(),
+                    lexer.current().location.begin
+                });
         }
 
         if (lexer.current().type == ',' || lexer.current().type == ';')
@@ -3244,7 +3238,16 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
 
     while (true)
     {
-        if (lexer.current().type == '.')
+        if (lexer.current().type == Lexeme::SafeNavigationIndex)
+        {
+            Position opPosition = lexer.current().location.begin;
+            nextLexeme();
+
+            Name index = parseIndexName(nullptr, opPosition);
+
+            expr = allocator.alloc<AstExprIndexName>(Location(start, index.location.end), expr, index.name, index.location, opPosition, '?');
+        }
+        else if (lexer.current().type == '.')
         {
             Position opPosition = lexer.current().location.begin;
             nextLexeme();
@@ -3253,8 +3256,9 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
 
             expr = allocator.alloc<AstExprIndexName>(Location(start, index.location.end), expr, index.name, index.location, opPosition, '.');
         }
-        else if (lexer.current().type == '[')
+        else if (lexer.current().type == '[' || lexer.current().type == Lexeme::SafeNavigationIndexExpr)
         {
+            char op = lexer.current().type == Lexeme::SafeNavigationIndexExpr ? '?' : '[';
             MatchLexeme matchBracket = lexer.current();
             nextLexeme();
 
@@ -3265,13 +3269,17 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
 
             expectMatchAndConsume(']', matchBracket);
 
-            expr = allocator.alloc<AstExprIndexExpr>(Location(start, end), expr, index);
+            expr = allocator.alloc<AstExprIndexExpr>(Location(start, end), expr, index, op);
             if (options.storeCstData)
                 cstNodeMap[expr] = allocator.alloc<CstExprIndexExpr>(matchBracket.position, closeBracketPosition);
         }
         else if (lexer.current().type == ':')
         {
             expr = parseMethodCall(start, expr);
+        }
+        else if (lexer.current().type == Lexeme::SafeNavigationMethodCall)
+        {
+            expr = parseMethodCall(start, expr, /* optional= */ true);
         }
         else if (lexer.current().type == '(')
         {
@@ -3283,6 +3291,30 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
             }
 
             expr = parseFunctionArgs(expr, false);
+        }
+        else if (lexer.current().type == Lexeme::SafeNavigationCall)
+        {
+            if (!asStatement && expr->location.end.line != lexer.current().location.begin.line)
+            {
+                reportAmbiguousCallError();
+                break;
+            }
+
+            Position argStart = lexer.current().location.end;
+            nextLexeme(); // consume '?('
+
+            TempVector<AstExpr*> args(scratchExpr);
+            if (lexer.current().type != ')')
+                parseExprList(args, nullptr);
+
+            Location end = lexer.current().location;
+            Position argEnd = end.end;
+
+            expectAndConsume(')', "safe function call");
+
+            expr = allocator.alloc<AstExprCall>(
+                Location(expr->location, end), expr, copy(args), /* self= */ false, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd), /* optional= */ true
+            );
         }
         else if (lexer.current().type == '{' || lexer.current().type == Lexeme::RawString || lexer.current().type == Lexeme::QuotedString)
         {
@@ -3306,7 +3338,7 @@ AstExpr* Parser::parsePrimaryExpr(bool asStatement)
     return expr;
 }
 
-AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr)
+AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr, bool optional)
 {
     Position opPosition = lexer.current().location.begin;
     nextLexeme();
@@ -3322,7 +3354,7 @@ AstExpr* Parser::parseMethodCall(Position start, AstExpr* expr)
         typeArguments = parseTypeInstantiationExpr(cstTypeArguments);
     }
 
-    expr = parseFunctionArgs(func, true);
+    expr = parseFunctionArgs(func, true, optional);
 
     if (options.storeCstData)
     {
@@ -3616,7 +3648,7 @@ std::tuple<AstArray<AstExpr*>, Location, Location> Parser::parseCallList(TempVec
 }
 
 // args ::=  `(' [explist] `)' | tableconstructor | String
-AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self)
+AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self, bool optional)
 {
     if (lexer.current().type == '(')
     {
@@ -3639,7 +3671,7 @@ AstExpr* Parser::parseFunctionArgs(AstExpr* func, bool self)
         expectMatchAndConsume(')', matchParen);
 
         AstExprCall* node = allocator.alloc<AstExprCall>(
-            Location(func->location, end), func, copy(args), self, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd)
+            Location(func->location, end), func, copy(args), self, AstArray<AstTypeOrPack>{}, Location(argStart, argEnd), optional
         );
         if (options.storeCstData)
             cstNodeMap[node] = allocator.alloc<CstExprCall>(matchParen.position, lexer.previousLocation().begin, copy(commaPositions));

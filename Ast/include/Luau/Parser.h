@@ -306,7 +306,7 @@ private:
 
     // primaryexp -> prefixexp { `.' NAME | `[' exp `]' | TypeInstantiation | `:' NAME [TypeInstantiation] funcargs | funcargs }
     AstExpr* parsePrimaryExpr(bool asStatement);
-    AstExpr* parseMethodCall(Position start, AstExpr* expr);
+    AstExpr* parseMethodCall(Position start, AstExpr* expr, bool optional = false);
 
     // asexp -> simpleexp [`::' Type]
     AstExpr* parseAssertionExpr();
@@ -316,7 +316,7 @@ private:
 
     std::tuple<AstArray<AstExpr*>, Location, Location> parseCallList(TempVector<Position>* commaPositions);
     // args ::=  `(' [explist] `)' | tableconstructor | String
-    AstExpr* parseFunctionArgs(AstExpr* func, bool self);
+    AstExpr* parseFunctionArgs(AstExpr* func, bool self, bool optional = false);
 
     std::optional<CstExprTable::Separator> tableSeparator();
 

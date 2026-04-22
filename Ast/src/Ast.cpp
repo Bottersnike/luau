@@ -239,13 +239,15 @@ AstExprCall::AstExprCall(
     const AstArray<AstExpr*>& args,
     bool self,
     const AstArray<AstTypeOrPack>& explicitTypes,
-    const Location& argLocation
+    const Location& argLocation,
+    bool optional
 )
     : AstExpr(ClassIndex(), location)
     , func(func)
     , typeArguments(explicitTypes)
     , args(args)
     , self(self)
+    , optional(optional)
     , argLocation(argLocation)
 {
 }
@@ -284,10 +286,11 @@ void AstExprIndexName::visit(AstVisitor* visitor)
         expr->visit(visitor);
 }
 
-AstExprIndexExpr::AstExprIndexExpr(const Location& location, AstExpr* expr, AstExpr* index)
+AstExprIndexExpr::AstExprIndexExpr(const Location& location, AstExpr* expr, AstExpr* index, char op)
     : AstExpr(ClassIndex(), location)
     , expr(expr)
     , index(index)
+    , op(op)
 {
 }
 

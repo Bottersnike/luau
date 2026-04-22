@@ -414,6 +414,12 @@ bool containsGeneric(TypePackId ty, NotNull<DenseHashSet<const void*>> generics)
  */
 bool isBlocked(TypeId ty);
 
+/**
+ * @return `ty` without any `nil` option when `ty` is a union containing `nil`.
+ *         Returns `ty` unchanged when it is not such a union, and `nullopt`
+ *         when every union option was `nil`.
+ */
+std::optional<TypeId> stripNilFromUnion(TypeArena& arena, TypeId ty);
 
 /**
  * **YOU SHOULD PROBABLY NOT USE THIS FUNCTION.**

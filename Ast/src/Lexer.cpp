@@ -92,6 +92,18 @@ std::string Lexeme::toString() const
     case DoubleColon:
         return "'::'";
 
+    case SafeNavigationIndex:
+        return "'?.'";
+
+    case SafeNavigationIndexExpr:
+        return "'?['";
+
+    case SafeNavigationCall:
+        return "'?('";
+
+    case SafeNavigationMethodCall:
+        return "'?:'";
+
     case FloorDiv:
         return "'//'";
 
@@ -972,13 +984,32 @@ Lexeme Lexer::readNext()
             return Lexeme(Location(start, 1), ':');
     }
 
+    case '?':
+    {
+        consume();
+
+        if (peekch() == '.') {
+            consume();
+            return Lexeme(Location(start, 2), Lexeme::SafeNavigationIndex);
+        } else if (peekch() == '[') {
+            consume();
+            return Lexeme(Location(start, 2), Lexeme::SafeNavigationIndexExpr);
+        } else if (peekch() == '(') {
+            consume();
+            return Lexeme(Location(start, 2), Lexeme::SafeNavigationCall);
+        } else if (peekch() == ':') {
+            consume();
+            return Lexeme(Location(start, 2), Lexeme::SafeNavigationMethodCall);
+        }
+        return Lexeme(Location(start, 1), '?');
+    }
+
     case '(':
     case ')':
     case ']':
     case ';':
     case ',':
     case '#':
-    case '?':
     case '&':
     case '|':
     {

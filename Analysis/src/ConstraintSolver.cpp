@@ -1524,9 +1524,21 @@ bool ConstraintSolver::tryDispatch(const FunctionCallConstraint& c, NotNull<cons
     TypeId fn = follow(c.fn);
     TypePackId argsPack = follow(c.argsPack);
     TypePackId result = follow(c.result);
+    auto makeNilResults = [this]()
+    {
+        TypePackId nilTail = arena->addTypePack(VariadicTypePack{builtinTypes->nilType, /*hidden*/ true});
+        return arena->addTypePack(TypePack{{builtinTypes->nilType}, nilTail});
+    };
 
     if (isBlocked(fn))
         return block(c.fn, constraint);
+
+    if (c.callSite && c.callSite->optional && isNil(fn))
+    {
+        bind(constraint, c.result, makeNilResults());
+        fillInDiscriminantTypes(constraint, c.discriminantTypes);
+        return true;
+    }
 
     if (get<AnyType>(fn))
     {
@@ -1712,7 +1724,7 @@ bool ConstraintSolver::tryDispatch(const FunctionCallConstraint& c, NotNull<cons
                 if (auto ft = get<FreeType>(ty))
                     hasBound |= !is<NeverType>(follow(ft->lowerBound)) || !is<UnknownType>(follow(ft->upperBound));
 
-            // If we have generics we can bind *and* 
+            // If we have generics we can bind *and*
             if (auto overloadAsFn = get<FunctionType>(overloadToUse); overloadAsFn && hasBound)
             {
                 CloneState cs{builtinTypes};
@@ -1765,6 +1777,9 @@ bool ConstraintSolver::tryDispatch(const FunctionCallConstraint& c, NotNull<cons
                     reportError(CodeTooComplex{}, constraint->location);
             }
         }
+
+        if (c.callSite && c.callSite->optional)
+            retTp = makeReturnTypePackOptional(constraint->scope, constraint->location, retTp);
 
         if (!usedMagic)
             bind(constraint, c.result, retTp);
@@ -1834,6 +1849,9 @@ bool ConstraintSolver::tryDispatch(const FunctionCallConstraint& c, NotNull<cons
             else
                 result = *subst;
         }
+
+        if (c.callSite && c.callSite->optional)
+            result = makeReturnTypePackOptional(constraint->scope, constraint->location, result);
 
         if (c.result != result)
             emplaceTypePack<BoundTypePack>(asMutable(c.result), result);
@@ -2235,6 +2253,11 @@ bool ConstraintSolver::tryDispatchHasIndexer(
 
         for (TypeId part : parts)
         {
+            // Nil has no indexer; skip it rather than producing *error-type*.
+            // This mirrors how HasPropConstraint treats nil in unions.
+            if (isNil(part))
+                continue;
+
             TypeId r = arena->addType(BlockedType{});
             getMutable<BlockedType>(r)->setOwner(constraint.get());
 
@@ -4137,6 +4160,45 @@ TypeId ConstraintSolver::simplifyIntersection(NotNull<Scope> scope, Location loc
 TypeId ConstraintSolver::simplifyUnion(NotNull<Scope> scope, Location location, TypeId left, TypeId right)
 {
     return ::Luau::simplifyUnion(builtinTypes, arena, left, right).result;
+}
+
+TypePackId ConstraintSolver::makeReturnTypePackOptional(NotNull<Scope> scope, Location location, TypePackId tp)
+{
+    tp = follow(tp);
+    auto makeNilTail = [this]()
+    {
+        return arena->addTypePack(VariadicTypePack{builtinTypes->nilType, /*hidden*/ true});
+    };
+
+    if (const TypePack* pack = get<TypePack>(tp))
+    {
+        std::vector<TypeId> optionalHead;
+        optionalHead.reserve(pack->head.size());
+
+        for (TypeId ty : pack->head)
+            optionalHead.push_back(simplifyUnion(scope, location, ty, builtinTypes->nilType));
+
+        std::optional<TypePackId> optionalTail;
+        if (pack->tail)
+            optionalTail = makeReturnTypePackOptional(scope, location, *pack->tail);
+        else
+            optionalTail = makeNilTail();
+
+        return arena->addTypePack(std::move(optionalHead), optionalTail);
+    }
+
+    if (const VariadicTypePack* variadic = get<VariadicTypePack>(tp))
+    {
+        TypeId optionalTy = simplifyUnion(scope, location, variadic->ty, builtinTypes->nilType);
+        return arena->addTypePack(VariadicTypePack{optionalTy, variadic->hidden});
+    }
+
+    if (std::optional<TypeId> firstTy = first(tp))
+    {
+        return arena->addTypePack(TypePack{{simplifyUnion(scope, location, *firstTy, builtinTypes->nilType)}, makeNilTail()});
+    }
+
+    return arena->addTypePack(TypePack{{builtinTypes->nilType}, makeNilTail()});
 }
 
 TypePackId ConstraintSolver::anyifyModuleReturnTypePackGenerics(TypePackId tp)

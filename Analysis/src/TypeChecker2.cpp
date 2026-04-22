@@ -1557,17 +1557,30 @@ void TypeChecker2::visitCall(AstExprCall* call)
         return;
     else if (isOptional(fnTy))
     {
-        switch (shouldSuppressErrors(NotNull{&normalizer}, fnTy))
+        if (call->optional)
         {
-        case ErrorSuppression::Suppress:
-            break;
-        case ErrorSuppression::NormalizationFailed:
-            reportError(NormalizationTooComplex{}, call->func->location);
-            [[fallthrough]];
-        case ErrorSuppression::DoNotSuppress:
-            reportError(OptionalValueAccess{fnTy}, call->func->location);
+            // Safe optional call: strip nil from the function type and continue checking.
+            // The CG should already have stripped nil before creating the FunctionCallConstraint,
+            // but if any nil slipped through (e.g., the function is purely nil), handle it here.
+            if (std::optional<TypeId> stripped = tryStripUnionFromNil(fnTy))
+                fnTy = follow(*stripped);
+            else
+                return; // purely nil function: a?() where a is nil — no-op, nothing to check
         }
-        return;
+        else
+        {
+            switch (shouldSuppressErrors(NotNull{&normalizer}, fnTy))
+            {
+            case ErrorSuppression::Suppress:
+                break;
+            case ErrorSuppression::NormalizationFailed:
+                reportError(NormalizationTooComplex{}, call->func->location);
+                [[fallthrough]];
+            case ErrorSuppression::DoNotSuppress:
+                reportError(OptionalValueAccess{fnTy}, call->func->location);
+            }
+            return;
+        }
     }
 
     if (FFlag::LuauExplicitTypeInstantiationSupport)
@@ -1617,7 +1630,15 @@ void TypeChecker2::visitCall(AstExprCall* call)
             return;
         }
 
-        args.head.push_back(lookupType(indexExpr->expr));
+        TypeId selfTy = lookupType(indexExpr->expr);
+        // For optional method calls, the call only executes on the non-nil branch,
+        // so strip nil from the self type to avoid a spurious TypeMismatch.
+        if (call->optional)
+        {
+            if (std::optional<TypeId> stripped = tryStripUnionFromNil(selfTy))
+                selfTy = follow(*stripped);
+        }
+        args.head.push_back(selfTy);
         argExprs.push_back(indexExpr->expr);
     }
 
@@ -1822,7 +1843,33 @@ void TypeChecker2::visit(AstExprCall* call)
     if (!matchTypeOf(*call))
         flipper.emplace(&typeContext, TypeContext::Default);
 
-    visit(call->func, ValueContext::RValue);
+    // For optional method calls (a?:method()), calling visit(call->func) would
+    // invoke visitExprName on the method index node, which reports OptionalValueAccess
+    // on the receiver. Instead, visit the receiver directly and validate the method
+    // exists on the non-nil part of the type, suppressing the spurious error.
+    if (call->optional && call->self)
+    {
+        if (auto indexName = call->func->as<AstExprIndexName>())
+        {
+            visitOptionalReceiver(indexName->expr);
+            TypeId receiverType = follow(lookupType(indexName->expr));
+            if (!isNil(receiverType))
+            {
+                TypeId strippedType = receiverType;
+                if (std::optional<TypeId> s = tryStripUnionFromNil(receiverType))
+                    strippedType = follow(*s);
+                checkIndexTypeFromType(strippedType, indexName->index.value, ValueContext::RValue, indexName->location, builtinTypes->stringType);
+            }
+        }
+        else
+        {
+            visit(call->func, ValueContext::RValue);
+        }
+    }
+    else
+    {
+        visit(call->func, ValueContext::RValue);
+    }
 
     if (matchAssert(*call) && call->args.size > 0)
     {
@@ -1845,26 +1892,7 @@ void TypeChecker2::visit(AstExprCall* call)
 
 std::optional<TypeId> TypeChecker2::tryStripUnionFromNil(TypeId ty) const
 {
-    if (const UnionType* utv = get<UnionType>(ty))
-    {
-        if (!std::any_of(begin(utv), end(utv), isNil))
-            return ty;
-
-        std::vector<TypeId> result;
-
-        for (TypeId option : utv)
-        {
-            if (!isNil(option))
-                result.push_back(option);
-        }
-
-        if (result.empty())
-            return std::nullopt;
-
-        return result.size() == 1 ? result[0] : module->internalTypes.addType(UnionType{std::move(result)});
-    }
-
-    return std::nullopt;
+    return stripNilFromUnion(module->internalTypes, ty);
 }
 
 TypeId TypeChecker2::stripFromNilAndReport(TypeId ty, const Location& location)
@@ -1896,6 +1924,46 @@ TypeId TypeChecker2::stripFromNilAndReport(TypeId ty, const Location& location)
     return ty;
 }
 
+void TypeChecker2::visitOptionalReceiver(AstExpr* expr)
+{
+    if (AstExprIndexName* indexName = expr->as<AstExprIndexName>())
+    {
+        if (indexName->op == '?')
+        {
+            visit(indexName, ValueContext::RValue);
+            return;
+        }
+
+        visit(indexName->expr, ValueContext::RValue);
+        TypeId leftType = stripFromNilAndReport(lookupType(indexName->expr), indexName->location);
+        checkIndexTypeFromType(leftType, indexName->index.value, ValueContext::RValue, indexName->location, builtinTypes->stringType);
+        return;
+    }
+
+    if (AstExprIndexExpr* indexExpr = expr->as<AstExprIndexExpr>())
+    {
+        if (indexExpr->op == '?')
+        {
+            visit(indexExpr, ValueContext::RValue);
+            return;
+        }
+
+        if (AstExprConstantString* str = indexExpr->index->as<AstExprConstantString>())
+        {
+            visit(indexExpr->expr, ValueContext::RValue);
+            visit(indexExpr->index, ValueContext::RValue);
+
+            TypeId leftType = stripFromNilAndReport(lookupType(indexExpr->expr), indexExpr->location);
+            TypeId astIndexExprType = lookupType(indexExpr->index);
+            const std::string stringValue(str->value.data, str->value.size);
+            checkIndexTypeFromType(leftType, stringValue, ValueContext::RValue, indexExpr->location, astIndexExprType);
+            return;
+        }
+    }
+
+    visit(expr, ValueContext::RValue);
+}
+
 void TypeChecker2::visitExprName(AstExpr* expr, Location location, const std::string& propName, ValueContext context, TypeId astIndexExprTy)
 {
     visit(expr, ValueContext::RValue);
@@ -1905,6 +1973,20 @@ void TypeChecker2::visitExprName(AstExpr* expr, Location location, const std::st
 
 void TypeChecker2::visit(AstExprIndexName* indexName, ValueContext context)
 {
+    if (indexName->op == '?')
+    {
+        // Safe navigation: visit the receiver but suppress OptionalValueAccess.
+        // We still validate that the property exists on the non-nil part of the type.
+        visitOptionalReceiver(indexName->expr);
+        TypeId receiverType = follow(lookupType(indexName->expr));
+        if (isNil(receiverType))
+            return; // purely nil receiver: a?.b is a no-op, nothing to check
+        TypeId strippedType = receiverType;
+        if (std::optional<TypeId> s = tryStripUnionFromNil(receiverType))
+            strippedType = follow(*s);
+        checkIndexTypeFromType(strippedType, indexName->index.value, context, indexName->location, builtinTypes->stringType);
+        return;
+    }
     // If we're indexing like _.foo - foo could either be a prop or a string.
     visitExprName(indexName->expr, indexName->location, indexName->index.value, context, builtinTypes->stringType);
 }
@@ -1932,6 +2014,21 @@ void TypeChecker2::visit(AstExprIndexExpr* indexExpr, ValueContext context)
     // do some really weird stuff here.
     if (auto str = indexExpr->index->as<AstExprConstantString>())
     {
+        if (indexExpr->op == '?')
+        {
+            // Safe bracket with string key: suppress OptionalValueAccess, still check property.
+            visitOptionalReceiver(indexExpr->expr);
+            TypeId receiverType = follow(lookupType(indexExpr->expr));
+            if (isNil(receiverType))
+                return;
+            TypeId strippedType = receiverType;
+            if (std::optional<TypeId> s = tryStripUnionFromNil(receiverType))
+                strippedType = follow(*s);
+            TypeId astIndexExprType = lookupType(indexExpr->index);
+            const std::string stringValue(str->value.data, str->value.size);
+            checkIndexTypeFromType(strippedType, stringValue, context, indexExpr->location, astIndexExprType);
+            return;
+        }
         TypeId astIndexExprType = lookupType(indexExpr->index);
         const std::string stringValue(str->value.data, str->value.size);
         visitExprName(indexExpr->expr, indexExpr->location, stringValue, context, astIndexExprType);
@@ -1943,6 +2040,15 @@ void TypeChecker2::visit(AstExprIndexExpr* indexExpr, ValueContext context)
 
     TypeId exprType = follow(lookupType(indexExpr->expr));
     TypeId indexType = follow(lookupType(indexExpr->index));
+
+    // For safe bracket index ?[], strip nil from the receiver silently.
+    if (indexExpr->op == '?')
+    {
+        if (isNil(exprType))
+            return;
+        if (std::optional<TypeId> s = tryStripUnionFromNil(exprType))
+            exprType = follow(*s);
+    }
 
     if (auto tt = get<TableType>(exprType))
     {
